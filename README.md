@@ -1,9 +1,9 @@
 # xv6-VMM (Demand Paging with Swap)
 
 ## Team Members
-* **Disk & Swap Subsystem:** Mayur Rajesh Keni
-* **Page Fault Handler:** [Teammate 2 Name]
-* **Eviction Policy & Memory Capping:** [Teammate 3 Name]
+* **Disk & Swap Subsystem:** MayurRajeshKeni
+* **Page Fault Handler:** Hari-Prannav
+* **Eviction Policy & Memory Capping:** Nitin-YK
 
 ## Project Overview
 This project modifies the standard xv6 operating system to support virtual memory swapping (Demand Paging). 
