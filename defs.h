@@ -57,6 +57,15 @@ int             writei(struct inode*, char*, uint, uint);
 void            ideinit(void);
 void            ideintr(void);
 void            iderw(struct buf*);
+void            swap_init(void);
+int             swap_alloc(void);
+void            swap_free(uint);
+int             swap_is_free(uint);
+void            swap_set_perm(uint, uint);
+uint            swap_get_perm(uint);
+int             swap_write(uint*, uint);
+int             swap_read(uint*, uint);
+int             swap_test(void);
 
 // ioapic.c
 void            ioapicenable(int irq, int cpu);

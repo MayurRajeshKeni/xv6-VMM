@@ -67,6 +67,9 @@ ideinit(void)
 
   // Switch back to disk 0.
   outb(0x1f6, 0xe0 | (0<<4));
+
+  // Initialize the swap subsystem
+  swap_init();
 }
 
 // Start the request for b.  Caller must hold idelock.
@@ -75,7 +78,7 @@ idestart(struct buf *b)
 {
   if(b == 0)
     panic("idestart");
-  if(b->blockno >= FSSIZE)
+  if(b->blockno >= TOTAL_DISK_BLOCKS)
     panic("incorrect blockno");
   int sector_per_block =  BSIZE/SECTOR_SIZE;
   int sector = b->blockno * sector_per_block;
@@ -165,4 +168,209 @@ iderw(struct buf *b)
 
 
   release(&idelock);
+}
+
+//
+// =====================================================================
+// Swap Subsystem (Disk & Swap Architecture)
+// =====================================================================
+//
+
+static struct {
+  struct spinlock lock;
+  struct swap_entry entries[MAX_SWAP_PAGES];
+} swap_table;
+
+// Initialize swap table and lock
+void
+swap_init(void)
+{
+  int i;
+
+  initlock(&swap_table.lock, "swap_table");
+  acquire(&swap_table.lock);
+  for(i = 0; i < MAX_SWAP_PAGES; i++){
+    swap_table.entries[i].is_free = 1;
+    swap_table.entries[i].page_perm = 0;
+  }
+  release(&swap_table.lock);
+}
+
+// Allocate a free swap slot; returns slot index (0 .. MAX_SWAP_PAGES-1) or -1 if full
+int
+swap_alloc(void)
+{
+  int i;
+
+  acquire(&swap_table.lock);
+  for(i = 0; i < MAX_SWAP_PAGES; i++){
+    if(swap_table.entries[i].is_free){
+      swap_table.entries[i].is_free = 0;
+      release(&swap_table.lock);
+      return i;
+    }
+  }
+  release(&swap_table.lock);
+  return -1;
+}
+
+// Free an allocated swap slot
+void
+swap_free(uint swap_slot)
+{
+  if(swap_slot >= MAX_SWAP_PAGES)
+    panic("swap_free: slot out of range");
+
+  acquire(&swap_table.lock);
+  swap_table.entries[swap_slot].is_free = 1;
+  swap_table.entries[swap_slot].page_perm = 0;
+  release(&swap_table.lock);
+}
+
+// Check if a swap slot is free (1 = free, 0 = allocated)
+int
+swap_is_free(uint swap_slot)
+{
+  if(swap_slot >= MAX_SWAP_PAGES)
+    return 0;
+
+  acquire(&swap_table.lock);
+  int free = swap_table.entries[swap_slot].is_free;
+  release(&swap_table.lock);
+  return free;
+}
+
+// Set page permission metadata for a swap slot
+void
+swap_set_perm(uint swap_slot, uint perm)
+{
+  if(swap_slot >= MAX_SWAP_PAGES)
+    return;
+
+  acquire(&swap_table.lock);
+  swap_table.entries[swap_slot].page_perm = perm;
+  release(&swap_table.lock);
+}
+
+// Get page permission metadata for a swap slot
+uint
+swap_get_perm(uint swap_slot)
+{
+  if(swap_slot >= MAX_SWAP_PAGES)
+    return 0;
+
+  acquire(&swap_table.lock);
+  uint perm = swap_table.entries[swap_slot].page_perm;
+  release(&swap_table.lock);
+  return perm;
+}
+
+// Write a 4KB memory page across 8 consecutive 512-byte disk sectors in the swap area
+int
+swap_write(uint *page_virtual_address, uint swap_slot)
+{
+  if(swap_slot >= MAX_SWAP_PAGES || page_virtual_address == 0)
+    return -1;
+
+  char *addr = (char*)page_virtual_address;
+  uint start_sector = SWAP_SLOT_TO_SECTOR(swap_slot);
+  struct buf b;
+  int i;
+
+  memset(&b, 0, sizeof(b));
+  initsleeplock(&b.lock, "swapbuf");
+  acquiresleep(&b.lock);
+  b.dev = ROOTDEV;
+
+  for(i = 0; i < SECTORS_PER_PAGE; i++){
+    b.blockno = start_sector + i;
+    b.flags = B_DIRTY;
+    memmove(b.data, addr + (i * BSIZE), BSIZE);
+    iderw(&b);
+  }
+
+  releasesleep(&b.lock);
+  return 0;
+}
+
+// Read 8 consecutive 512-byte disk sectors from a swap slot back into a 4KB physical page
+int
+swap_read(uint *page_virtual_address, uint swap_slot)
+{
+  if(swap_slot >= MAX_SWAP_PAGES || page_virtual_address == 0)
+    return -1;
+
+  char *addr = (char*)page_virtual_address;
+  uint start_sector = SWAP_SLOT_TO_SECTOR(swap_slot);
+  struct buf b;
+  int i;
+
+  memset(&b, 0, sizeof(b));
+  initsleeplock(&b.lock, "swapbuf");
+  acquiresleep(&b.lock);
+  b.dev = ROOTDEV;
+
+  for(i = 0; i < SECTORS_PER_PAGE; i++){
+    b.blockno = start_sector + i;
+    b.flags = 0;
+    iderw(&b);
+    memmove(addr + (i * BSIZE), b.data, BSIZE);
+  }
+
+  releasesleep(&b.lock);
+  return 0;
+}
+
+// Self-test verifying disk swap read/write functionality
+int
+swap_test(void)
+{
+  int slot = swap_alloc();
+  if(slot < 0){
+    cprintf("swap_test: FAILED to allocate swap slot\n");
+    return -1;
+  }
+
+  char *page = kalloc();
+  if(!page){
+    cprintf("swap_test: FAILED to allocate memory page\n");
+    swap_free(slot);
+    return -1;
+  }
+
+  int i;
+  for(i = 0; i < PGSIZE; i++){
+    page[i] = (char)(i % 251 + 1);
+  }
+
+  if(swap_write((uint*)page, slot) < 0){
+    cprintf("swap_test: FAILED swap_write\n");
+    kfree(page);
+    swap_free(slot);
+    return -1;
+  }
+
+  memset(page, 0, PGSIZE);
+
+  if(swap_read((uint*)page, slot) < 0){
+    cprintf("swap_test: FAILED swap_read\n");
+    kfree(page);
+    swap_free(slot);
+    return -1;
+  }
+
+  for(i = 0; i < PGSIZE; i++){
+    if(page[i] != (char)(i % 251 + 1)){
+      cprintf("swap_test: FAILED data mismatch at byte %d (expected %d, got %d)\n",
+              i, (char)(i % 251 + 1), page[i]);
+      kfree(page);
+      swap_free(slot);
+      return -1;
+    }
+  }
+
+  kfree(page);
+  swap_free(slot);
+  cprintf("swap_test: PASSED! 4KB page write/read verified across 8 disk sectors.\n");
+  return 0;
 }
