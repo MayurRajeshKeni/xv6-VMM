@@ -289,7 +289,10 @@ wait(void)
         pid = p->pid;
         kfree(p->kstack);
         p->kstack = 0;
+        // freevm() may sleep (swap slots, eviction lock): can't hold ptable.lock.
+        release(&ptable.lock);
         freevm(p->pgdir);
+        acquire(&ptable.lock);
         p->pid = 0;
         p->parent = 0;
         p->name[0] = 0;

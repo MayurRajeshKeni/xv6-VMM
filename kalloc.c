@@ -8,6 +8,7 @@
 #include "memlayout.h"
 #include "mmu.h"
 #include "spinlock.h"
+#include "swap.h"
 
 void freerange(void *vstart, void *vend);
 extern char end[]; // first address after kernel loaded from ELF file
@@ -39,6 +40,10 @@ kinit1(void *vstart, void *vend)
 void
 kinit2(void *vstart, void *vend)
 {
+  // Memory cap: only hand out physical memory below PHYSCAP, so the system
+  // runs out of RAM early and has to evict pages to swap.
+  if((uint)vend > (uint)P2V(PHYSCAP))
+    vend = P2V(PHYSCAP);
   freerange(vstart, vend);
   kmem.use_lock = 1;
 }
@@ -79,18 +84,28 @@ kfree(char *v)
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.
 // Returns 0 if the memory cannot be allocated.
+//
+// If the free list is empty, ask the evictor (vm.c) to push a user page out
+// to swap and try again. Eviction needs a process context (it sleeps on
+// disk I/O) so it is skipped during boot.
 char*
 kalloc(void)
 {
   struct run *r;
+  int tries;
 
-  if(kmem.use_lock)
-    acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
-  if(kmem.use_lock)
-    release(&kmem.lock);
-  return (char*)r;
+  for(tries = 0; ; tries++){
+    if(kmem.use_lock)
+      acquire(&kmem.lock);
+    r = kmem.freelist;
+    if(r)
+      kmem.freelist = r->next;
+    if(kmem.use_lock)
+      release(&kmem.lock);
+
+    if(r || !kmem.use_lock || tries >= 16)
+      return (char*)r;
+    if(!evict_page())      // nothing could be evicted: really out of memory
+      return 0;
+  }
 }
-

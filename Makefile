@@ -181,6 +181,8 @@ UPROGS=\
 	_usertests\
 	_wc\
 	_zombie\
+	_memtest\
+	_forkswap\
 	_swaptest\
 
 fs.img: mkfs README.md $(UPROGS)
