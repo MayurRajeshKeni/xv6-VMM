@@ -80,10 +80,27 @@ trap(struct trapframe *tf)
     break;
 
   //PAGEBREAK: 13
-  case T_PGFLT:
-    if(myproc() && !(tf->err & 1) && rcr2() < KERNBASE &&
-       swapinpage(myproc()->pgdir, rcr2()) == 0)
-      break;
+  case T_PGFLT: {
+    // 1. Read the cr2 register to identify the faulting virtual address[cite: 1]
+    uint fault_addr = rcr2();
+    
+    // 2. We must ensure a user process is currently running
+    if(myproc() == 0){
+      panic("T_PGFLT: Page fault in kernel space without a process");
+    }
+
+    // 3. Call swapinpage() from vm.c. 
+    // This safely handles kalloc(), calling Mayur's swap_read(), and updating 
+    // the PTEs while holding the necessary eviction locks[cite: 3].
+    if(swapinpage(myproc()->pgdir, fault_addr) < 0){
+      // If swapinpage returns -1, it means the address wasn't a valid swapped page[cite: 3].
+      // We treat this as a standard segmentation fault and kill the process.
+      cprintf("pid %d %s: trap 14 err %d on cpu %d eip 0x%x addr 0x%x -- kill proc\n",
+              myproc()->pid, myproc()->name, tf->err, cpuid(), tf->eip, fault_addr);
+      myproc()->killed = 1;
+    }
+    break;
+  }
   default:
     if(myproc() == 0 || (tf->cs&3) == 0){
       // In kernel, it must be our mistake.
