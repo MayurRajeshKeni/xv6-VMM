@@ -32,15 +32,15 @@ sequenceDiagram
     alt Page is Present (PTE_P set)
         MMU-->>User: Physical RAM access succeeds
     else Page Not Present (PTE_P = 0)
-        MMU->>Trap: Page Fault (#14 / T_PGFLT) with CR2 = VA
-        Trap->>Trap: Read faulting address from %cr2
+        MMU->>Trap: Page Fault (Trap 14 / T_PGFLT) with CR2 = VA
+        Trap->>Trap: Read faulting address from CR2
         alt Swap Slot Mapped in PTE
             Trap->>IDE: swap_read(new_page, swap_slot)
             IDE->>Disk: Read 8 consecutive 512B sectors (4KB)
             Disk-->>IDE: 4KB page data returned
             IDE-->>Trap: Page copied to memory
             Trap->>IDE: swap_free(swap_slot)
-            Trap->>Trap: Remap PTE with PTE_P | PTE_U | PTE_W
+            Trap->>Trap: Remap PTE with PTE_P, PTE_U, PTE_W
             Trap-->>User: Resume faulting instruction transparently
         else Unallocated Memory
             Trap->>User: Segmentation Fault / Kill process
@@ -48,8 +48,8 @@ sequenceDiagram
     end
 
     Note over VM,Disk: Memory Pressure / Page Eviction
-    VM->>VM: Memory cap reached; select victim page
-    VM->>IDE: swap_alloc() -> allocate free swap slot
+    VM->>VM: Memory cap reached, select victim page
+    VM->>IDE: swap_alloc: allocate free swap slot
     VM->>IDE: swap_write(page_va, swap_slot)
     IDE->>Disk: Write 8 consecutive 512B sectors (4KB)
     Disk-->>IDE: Write complete interrupt (IRQ_IDE)
