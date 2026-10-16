@@ -109,10 +109,6 @@ int  swap_test(void);                          // Kernel-level integrity self-te
 
 ```
 xv6_OSminiproj/
-├── docs/                        # Project documentation & presentation resources
-│   ├── project-report.md        # Comprehensive written project report (rubric-aligned)
-│   ├── video-demo-script.md     # Minute-by-minute video recording script
-│   └── rubric.png               # Evaluation rubric image
 ├── param.h                      # Kernel parameters (defines MAX_SWAP_PAGES, FSSIZE)
 ├── fs.h                         # File system & swap boundaries (SWAP_START, struct swap_entry)
 ├── defs.h                       # Kernel function prototypes & swap API bridge
@@ -185,11 +181,3 @@ TEST PASSED: Disk swap read/write verified successfully!
 7. Checks every single byte for exact bitwise equality.
 8. Releases the slot via `swap_free()` and returns memory via `kfree()`.
 9. Validates file system stability (`ls`, `mkdir` continue functioning normally).
-
----
-
-## 📚 Documentation & Deliverables
-
-- 📄 **[Detailed Project Report](docs/project-report.md)**: Full design rationale, alternatives considered, obstacles encountered, and rubric alignment for all 5 grading criteria.
-- 🎬 **[Video Demo Script](docs/video-demo-script.md)**: Timed script with designated member roles, screen actions, and spoken narration.
-- 📊 **[Evaluation Rubric Reference](docs/rubric.png)**: The grading rubric guiding this project.
