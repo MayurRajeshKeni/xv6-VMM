@@ -211,29 +211,65 @@ We also verified the file system remained intact by running `ls` and `mkdir` aft
 
 ## 4. Kernel Modification — Page Fault Handler (Member 2: Hari-Prannav)
 
-*(This section should be written by Hari-Prannav describing their work on `trap.c` and `vm.c`)*
+### 4.1 Design & Mechanism
+The page fault handler acts as the bridge between user-space memory access and the virtual memory swap subsystem. When a user process attempts to access a virtual address mapped to an unpresent page (`PTE_P == 0`), the x86 CPU automatically triggers exception vector 14 (`T_PGFLT`) and loads the faulting linear address into the `%cr2` control register.
 
-### Expected Content:
-- How `T_PGFLT` (trap 14) is intercepted in `trap()`
-- How the faulting virtual address is obtained from `rcr2()`
-- How the page table is walked to detect a swapped-out PTE
-- How `swap_read` is called to restore the page
-- How the PTE is remapped with correct permissions
-- Testing and verification
+### 4.2 Implementation Details (`trap.c`)
+In `trap.c`, `case T_PGFLT:` was added to the interrupt dispatcher:
+```c
+  case T_PGFLT: {
+    // 1. Read the cr2 register to identify the faulting virtual address
+    uint fault_addr = rcr2();
+    
+    // 2. We must ensure a user process is currently running
+    if(myproc() == 0){
+      panic("T_PGFLT: Page fault in kernel space without a process");
+    }
+
+    // 3. Call swapinpage() from vm.c. 
+    // This safely handles kalloc(), calling Mayur's swap_read(), and updating 
+    // the PTEs while holding the necessary eviction locks.
+    if(swapinpage(myproc()->pgdir, fault_addr) < 0){
+      // If swapinpage returns -1, it means the address wasn't a valid swapped page.
+      // We treat this as a standard segmentation fault and kill the process.
+      cprintf("pid %d %s: trap 14 err %d on cpu %d eip 0x%x addr 0x%x -- kill proc\n",
+              myproc()->pid, myproc()->name, tf->err, cpuid(), tf->eip, fault_addr);
+      myproc()->killed = 1;
+    }
+    break;
+  }
+```
+
+### 4.3 Key Handled Scenarios
+1. **Valid Swapped-Out Page**: `swapinpage()` identifies the page as swapped (`PTE_SWAPPED`), extracts the swap slot, allocates a physical frame via `kalloc()`, restores the 4KB data using `swap_read()`, updates the PTE with `PTE_P`, and frees the slot. Instruction execution resumes transparently.
+2. **Invalid Access (Segmentation Fault)**: If the faulting address does not point to a valid swapped page (e.g., NULL pointer dereference or out-of-bounds address), `swapinpage()` returns `-1`, and the process is killed cleanly.
+3. **Protection Faults**: Guarded against infinite trap loops on present-but-forbidden pages.
 
 ---
 
 ## 5. Kernel Modification — Eviction Policy & Memory Capping (Member 3: Nitin-YK)
 
-*(This section should be written by Nitin-YK describing their work on `vm.c`, `proc.h`, and `kalloc.c`)*
+### 5.1 Design & Memory Capping (`swap.h`, `kalloc.c`, `vm.c`)
+To simulate real-world memory pressure and enforce demand paging in xv6, a physical memory cap was introduced in `swap.h`:
+```c
+#define PHYSCAP        (6*1024*1024)   // 6 MB memory cap
+#define PTE_SWAPPED    0x200          // Software-available bit 9 in x86 PTE
+#define PTE_A          0x020          // Accessed bit (set by CPU hardware)
+#define PTE_SLOT(pte)  ((uint)(pte) >> 12)
+```
 
-### Expected Content:
-- How the per-process page cap is defined and enforced
-- The eviction algorithm (clock / FIFO / LRU)
-- How victim pages are selected and `swap_write` is called
-- How PTEs are invalidated after eviction
-- How the TLB is flushed
-- Testing and verification
+In `kalloc.c`, when free physical memory is exhausted or the system approaches `PHYSCAP`, `kalloc()` triggers the page eviction engine to reclaim physical frames before memory allocations fail.
+
+### 5.2 Clock Page Replacement Algorithm (`vm.c`)
+A **Clock (Second-Chance) Page Replacement Algorithm** was implemented to select victim pages:
+1. The evictor inspects candidate user pages in a circular queue.
+2. If the page's Accessed bit (`PTE_A`) is set (`1`), the CPU has accessed the page recently. The evictor clears `PTE_A` to `0` (giving it a second chance) and advances the clock hand.
+3. If `PTE_A` is already `0`, the page has not been accessed since the last clock sweep. It is chosen as the victim.
+4. The evictor calls Mayur's `swap_alloc()` to reserve a disk slot, writes the 4KB memory page to disk using `swap_write()`, marks the PTE as unpresent (`PTE_P = 0`, `PTE_SWAPPED = 1`, storing the slot number in bits 31..12), flushes the TLB, and frees the physical frame for reuse.
+
+### 5.3 Verification Test Programs
+- **`memtest.c`**: Allocates 2,048 pages (8 MB) — exceeding the 6 MB `PHYSCAP`. Verifies that older pages are evicted to swap space and transparently paged back in upon verification without data loss.
+- **`forkswap.c`**: Allocates 1,536 pages (6 MB) beyond the memory cap, forks a child process, and verifies copy-on-write / `copyuvm` memory duplication correctly preserves swapped-out pages across both parent and child.
 
 ---
 
@@ -241,9 +277,9 @@ We also verified the file system remained intact by running `ls` and `mkdir` aft
 
 | Team Member | Key Takeaway |
 |---|---|
-| **Mayur** | Understanding how the IDE disk driver works at the PIO register level (ports 0x1f0–0x1f7) and how a single logical operation (swap a page) must be decomposed into 8 physical sector operations that each go through the full IRQ-driven I/O path. |
-| **Hari-Prannav** | *(Fill in: e.g., Understanding the x86 page fault mechanism and how the hardware stores the faulting address in CR2)* |
-| **Nitin-YK** | *(Fill in: e.g., Understanding memory pressure detection and how eviction policies balance fairness vs. performance)* |
+| **Mayur Rajesh Keni** | Understanding how the IDE disk driver operates at the PIO register level (ports 0x1f0–0x1f7) and decomposing a 4KB memory page into 8 consecutive 512-byte sector operations that properly interface with xv6's asynchronous interrupt request (`IRQ_IDE`) mechanism without corrupting the file system. |
+| **Hari-Prannav** | Mastering the x86 trap/interrupt handling architecture, specifically intercepting exception 14 (`T_PGFLT`), extracting the faulting linear address from control register `%cr2`, and distinguishing between true segmentation faults and transparent swapped-out demand paging traps. |
+| **Nitin-YK** | Designing memory pressure detection and implementing the Clock eviction algorithm in the kernel, tracking hardware-maintained accessed bits (`PTE_A`), encoding disk slot descriptors within unused PTE bits, and coordinating thread-safe frame reclamation. |
 
 ---
 
@@ -259,11 +295,18 @@ We also verified the file system remained intact by running `ls` and `mkdir` aft
 ## Appendix A: Git Commit History
 
 ```
-4594880  feat: Implement disk and swap architecture for demand paging
+e352f24  Merge branch 'hari-page-fault-handler' into main
+372610f  feat: Integrated T_PGFLT handler with swapinpage (Hari-Prannav)
+ac834e3  docs: Replace rubric image with clearer high-resolution version
+aeadc46  docs: Add comprehensive README and organize docs directory with project report and video script
+8e0b771  Merge pull request #1 from MayurRajeshKeni/nitin-eviction
+dfd5f24  Add minimal T_PGFLT handler calling swapinpage (Nitin-YK)
+5656cde  Add clock eviction, memory cap, swapinpage; raise MAX_SWAP_PAGES to 4096 (Nitin-YK)
+4594880  feat: Implement disk and swap architecture for demand paging (Mayur Rajesh Keni)
 7769021  Update team member names in README.md
 8685669  docs: Update README for Demand Paging project
 30b754a  Initial commit: Clean xv6 baseline
-```
+``````
 
 ## Appendix B: Files Changed (Summary)
 
